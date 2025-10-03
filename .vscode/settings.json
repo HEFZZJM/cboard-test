@@ -22,4 +22,5 @@
             "statusBarVisibility": "hidden",
         },
     },
+    "C_Cpp.errorSquiggles": "disabled",
 }

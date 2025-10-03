@@ -48,6 +48,10 @@
 
 /* USER CODE END Variables */
 osThreadId defaultTaskHandle;
+osThreadId BuzzerHandle;
+osThreadId LEDHandle;
+osThreadId ServoHandle;
+osThreadId Contr0lTaskHandle;
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
@@ -55,6 +59,10 @@ osThreadId defaultTaskHandle;
 /* USER CODE END FunctionPrototypes */
 
 void StartDefaultTask(void const * argument);
+extern void buzzer_task(void const * argument);
+extern void led_task(void const * argument);
+extern void servo_task(void const * argument);
+extern void control_task(void const * argument);
 
 extern void MX_USB_DEVICE_Init(void);
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
@@ -106,6 +114,22 @@ void MX_FREERTOS_Init(void) {
   osThreadDef(defaultTask, StartDefaultTask, osPriorityNormal, 0, 128);
   defaultTaskHandle = osThreadCreate(osThread(defaultTask), NULL);
 
+  /* definition and creation of Buzzer */
+  osThreadDef(Buzzer, buzzer_task, osPriorityAboveNormal, 0, 512);
+  BuzzerHandle = osThreadCreate(osThread(Buzzer), NULL);
+
+  /* definition and creation of LED */
+  osThreadDef(LED, led_task, osPriorityNormal, 0, 512);
+  LEDHandle = osThreadCreate(osThread(LED), NULL);
+
+  /* definition and creation of Servo */
+  osThreadDef(Servo, servo_task, osPriorityNormal, 0, 128);
+  ServoHandle = osThreadCreate(osThread(Servo), NULL);
+
+  /* definition and creation of Contr0lTask */
+  osThreadDef(Contr0lTask, control_task, osPriorityNormal, 0, 512);
+  Contr0lTaskHandle = osThreadCreate(osThread(Contr0lTask), NULL);
+
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
   /* USER CODE END RTOS_THREADS */
@@ -127,7 +151,7 @@ void StartDefaultTask(void const * argument)
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+    osDelay(100);
   }
   /* USER CODE END StartDefaultTask */
 }
