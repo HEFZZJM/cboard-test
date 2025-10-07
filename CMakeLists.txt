@@ -57,8 +57,11 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     sp_middleware/io/can/can.cpp # <- 添加这一行
     sp_middleware/motor/rm_motor/rm_motor.cpp # <- 添加这一行
     sp_middleware/motor/super_cap/super_cap.cpp # <- 添加这一行
+    sp_middleware/referee/pm02/pm02.cpp # <- 添加这一行
     sp_middleware/tools/mecanum/mecanum.cpp # <- 添加这一行
     sp_middleware/tools/pid/pid.cpp # <- 添加这一行
+    sp_middleware/tools/crc/crc.cpp # <- 添加这一行
+    sp_middleware/tools/linear_interp/linear_interp.cpp # <- 添加这一行
     sp_middleware/tools/math_tools/math_tools.cpp # <- 添加这一行
 )
 

@@ -4,8 +4,10 @@
 #include "io/plotter/plotter.hpp"
 #include "motor/rm_motor/rm_motor.hpp"
 #include "motor/super_cap/super_cap.hpp"
+#include "referee/pm02/pm02.hpp"
 #include "tools/mecanum/mecanum.hpp"
 #include "tools/pid/pid.hpp"
+#include "tools/linear_interp/linear_interp.hpp"
 #include "usart.h"
 #include "can.h"
 #include <stdio.h>
@@ -15,7 +17,8 @@
 sp::DBus remote(&huart3);  // DBus遥控器，使用UART3
 sp::CAN can2(&hcan2);     // CAN2用于电机通讯
 sp::Plotter plotter(&huart1, true);
-sp::SuperCap super_cap(sp::SuperCapMode::DISCHARGE);   // 超级电容对象  
+sp::SuperCap super_cap(sp::SuperCapMode::AUTOMODE);   // 超级电容对象
+sp::PM02 pm02(&huart6);   // 裁判系统模块，使用UART6
 // sp::Plotter plotter(&huart1);  // Plotter数据可视化，使用UART1
 
 // 四个RM3508电机，ID分别为1,2,3,4
@@ -36,18 +39,28 @@ const float kV=0.0f;
 // const float kS=0.;
 
 // 功率计算参数
-const float k_omega_square = 0.02f;  // omega^2项的系数
+const float k_omega_square = 0.017f;  // omega^2项的系数
 const float k_torque_square = 2.8f;  // 扭矩^2项的系数
-const float kS = 5;  // 扭矩^2项的系数
+const float kS = 5;  
 
 // 功率限制参数
-const float max_power_limit = 60.0f;  // 最大功率上限 (W)
+float max_power_limit = 80.0f;  // 最大功率上限 (W)
+const float base_power_limit = 75.0f;  // 基础功率限制
+
+const float cap_voltage_table[] = {4.f,14.0f,  28.0f};
+const float extra_power_table[] = {0,20.0f, 75.0f};
+// 3.0V: 无额外功率 (即将耗尽)
+// 4.0V: +25W 额外功率
+// 5.0V: +70W 额外功率
+// 6.0V: +130W 额外功率 (满电)
+
+sp::LinearInterp cap_power_interp(cap_voltage_table, extra_power_table, 3);
 
 // 控制状态
 bool system_enabled = false;
 bool power_limit_disabled = false;  // 功率限制解除状态
-float max_speed = 2.0f;  // 最大速度 m/s
-float max_angular_speed = 3.f;  // 最大角速度 rad/s
+float max_speed = 1.5f;  // 最大速度 m/s
+float max_angular_speed = 10.f;  // 最大角速度 rad/s
 float deadband = 0.f;  // 摇杆死区，小于此值时输出0
   
 extern "C" void control_task(void const * argument)
@@ -59,10 +72,11 @@ extern "C" void control_task(void const * argument)
   // 初始化遥控器
   remote.request();
   
+  // 初始化裁判系统
+  pm02.request();
+  
   // 功率限制相关变量
   static float last_power_scale = 1.0f;  // 保存功率缩放系数
-  static float last_predicted_power = 0.0f;  // 保存预测功率
-  static sp::SuperCapMode last_super_cap_mode = sp::SuperCapMode::AUTOMODE;  // 保存超级电容模式
   
   while (true) {
     uint32_t current_time = osKernelSysTick();
@@ -83,13 +97,18 @@ extern "C" void control_task(void const * argument)
         system_enabled = false;
         power_limit_disabled = false;  // 禁用时也关闭功率限制解除
       } else if (remote.sw_r == sp::DBusSwitchMode::MID) {
-        // MID: enable
+        // MID: 标准模式，使用基础功率限制
         system_enabled = true;
         power_limit_disabled = false;
+        max_power_limit = base_power_limit;
       } else if (remote.sw_r == sp::DBusSwitchMode::UP) {
-        // UP: enable + 解除功率限制
+        // UP: 爆发模式，根据超级电容电压动态计算额外功率
         system_enabled = true;
-        power_limit_disabled = true;
+        power_limit_disabled = false;
+        
+        // 使用线性插值根据电容电压计算额外功率
+        float extra_power = cap_power_interp.calc(super_cap.voltage);
+        max_power_limit = base_power_limit + extra_power;
       }
       
       if (system_enabled) {
@@ -197,15 +216,16 @@ extern "C" void control_task(void const * argument)
             }
           }
           
-          // 保存功率缩放系数和预测功率用于后续使用
-          last_power_scale = power_scale;
-          last_predicted_power = predicted_power;
+        // 保存功率缩放系数用于后续使用
+        last_power_scale = power_scale;
+        // power_scale = 1.0f;
           
-          // 应用功率限制到扭矩命令
-          motor_lf.cmd(torque_lf * power_scale);
-          motor_lr.cmd(torque_lr * power_scale);
-          motor_rf.cmd(torque_rf * power_scale);
-          motor_rr.cmd(torque_rr * power_scale);
+        // 应用功率限制到扭矩命令
+        motor_lf.cmd(torque_lf * power_scale);
+        motor_lr.cmd(torque_lr * power_scale);
+        motor_rf.cmd(torque_rf * power_scale);
+        motor_rr.cmd(torque_rr * power_scale);
+        
         }
       } else {
         // 系统禁用，停止所有电机
@@ -216,47 +236,19 @@ extern "C" void control_task(void const * argument)
       }
     }
     
-    // 超级电容模式控制
-    if (system_enabled) {
-      sp::SuperCapMode new_mode;
-      
-      if (last_predicted_power > max_power_limit) {
-        // 预测功率大于限制，超级电容只放不充
-        new_mode = sp::SuperCapMode::DISCHARGE;
-      } else {
-        // 预测功率小于限制，超级电容只充不放
-        new_mode = sp::SuperCapMode::DISOUTPUT;
-      }
-      
-      // 动态更改超级电容模式（只在模式改变时更新）
-      if (new_mode != last_super_cap_mode) {
-        super_cap.set_mode(new_mode);
-        last_super_cap_mode = new_mode;
-      }
-      
-      // 发送超级电容控制命令
-    //   super_cap.write(can2.tx_data, 100, 0, 0);  // 参数需要根据实际需求调整
-    //   can2.send(super_cap.tx_id);
-    } else {
-      // 系统禁用时，重置超级电容模式
-      if (last_super_cap_mode != sp::SuperCapMode::AUTOMODE) {
-        super_cap.set_mode(sp::SuperCapMode::AUTOMODE);
-        last_super_cap_mode = sp::SuperCapMode::AUTOMODE;
-      }
-    }
     
-    // 发送电机控制命令
-    motor_lf.write(can2.tx_data);
-    can2.send(motor_lf.tx_id);
     
-    motor_lr.write(can2.tx_data);
-    can2.send(motor_lr.tx_id);
+    // 发送电机控制命令（所有电机数据打包在一个CAN消息中）
+    motor_lf.write(can2.tx_data);  // 电机1数据写入字节0-1
+    motor_lr.write(can2.tx_data);  // 电机2数据写入字节2-3
+    motor_rf.write(can2.tx_data);  // 电机3数据写入字节4-5
+    motor_rr.write(can2.tx_data);  // 电机4数据写入字节6-7
+    can2.send(motor_lf.tx_id);     // 只发送一次，包含所有电机数据
     
-    motor_rf.write(can2.tx_data);
-    can2.send(motor_rf.tx_id);
-    
-    motor_rr.write(can2.tx_data);
-    can2.send(motor_rr.tx_id);
+      super_cap.write(
+        can2.tx_data, pm02.robot_status.chassis_power_limit, pm02.power_heat.buffer_energy,
+        pm02.robot_status.power_management_chassis_output);    // chassis_output: 预测的底盘输出功率
+      can2.send(super_cap.tx_id);
     
     // 发送plotter数据 - 每100ms发送一次（降低发送频率）
     static uint32_t plot_counter = 0;
@@ -289,14 +281,22 @@ extern "C" void control_task(void const * argument)
       // 预测功率计算：消耗功率 = 输出功率 + omega^2*定值 + 扭矩^2*定值
       float predicted_power = output_power + k_omega_square * total_omega_square + k_torque_square * total_torque_square + kS;
       
-      // 发送功率数据
-      plotter.plot(
-        super_cap.power_in - super_cap.power_out,  // 实际功率消耗
-        predicted_power,                           // 预测功率
-        super_cap.cap_energy,                         // 功率缩放系数
-        (float)last_super_cap_mode                // 超级电容模式
-      );
+       // 检查超级电容数据是否过期
+       
+       // 发送功率数据
+       plotter.plot(
+         super_cap.voltage,  // 实际功率消耗
+         predicted_power,
+         
+         
+         super_cap.power_in-super_cap.power_out,
+         super_cap.power_in,
+         super_cap.power_out,
+         mecanum.speed_lf
+         
+       );
     }
+    
     
     // 10ms控制周期
     osDelay(10);
@@ -309,8 +309,8 @@ extern "C" void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
   if (hcan->Instance == CAN2) {
     can2.recv(CAN_RX_FIFO0);
     
-    // 调试输出：CAN接收中断被调用
-    // printf("CAN2 RX: ID=0x%03lX\r\n", can2.rx_id);
+     // 调试输出：CAN接收中断被调用
+     printf("CAN2 RX: ID=0x%03lX\r\n", can2.rx_id);
     
     // 处理电机反馈数据
     if (can2.rx_id == motor_lf.rx_id) {
@@ -321,10 +321,13 @@ extern "C" void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
       motor_rf.read(can2.rx_data, osKernelSysTick());
     } else if (can2.rx_id == motor_rr.rx_id) {
       motor_rr.read(can2.rx_data, osKernelSysTick());
-    } else if (can2.rx_id == super_cap.rx_id) {
-      // 处理超级电容反馈数据
-      super_cap.read(can2.rx_data, osKernelSysTick());
-    }
+     } else if (can2.rx_id == super_cap.rx_id) {
+       // 处理超级电容反馈数据
+       super_cap.read(can2.rx_data, osKernelSysTick());
+       // 调试输出：超级电容数据更新
+       // printf("SuperCap updated: voltage=%.2f, power_in=%.2f, power_out=%.2f\r\n", 
+       //        super_cap.voltage, super_cap.power_in, super_cap.power_out);
+     }
   }
 }
 
@@ -334,13 +337,18 @@ extern "C" void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t S
   if (huart == &huart3) {
     remote.update(Size, osKernelSysTick());
     remote.request();
+  } else if (huart == &huart6) {
+    pm02.update(Size);
+    pm02.request();
   }
 }
 
 // UART错误回调函数
 extern "C" void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
-  if (huart==&huart3) {
+  if (huart == &huart3) {
     remote.request();
+  } else if (huart == &huart6) {
+    pm02.request();
   }
 }
