@@ -45,7 +45,7 @@ const float kS = 5;
 
 // 功率限制参数
 float max_power_limit = 80.0f;  // 最大功率上限 (W)
-const float base_power_limit = 75.0f;  // 基础功率限制
+const float base_power_limit = 80.0f;  // 基础功率限制
 
 const float cap_voltage_table[] = {4.f,14.0f,  28.0f};
 const float extra_power_table[] = {0,20.0f, 75.0f};
@@ -250,13 +250,13 @@ extern "C" void control_task(void const * argument)
         pm02.robot_status.power_management_chassis_output);    // chassis_output: 预测的底盘输出功率
       can2.send(super_cap.tx_id);
     
-    // 发送plotter数据 - 每100ms发送一次（降低发送频率）
+    // 发送plotter数据 - 20ms发送一次
     static uint32_t plot_counter = 0;
     
     if (++plot_counter >= 2) {  // 2 * 10ms = 20ms
       plot_counter = 0;
       
-      // 计算输出功率（使用扭矩*速度估算，或者使用super_cap的power_out）
+      // 计算输出功率（使用扭矩*速度估算）
       float output_power = 0.0f;
       output_power += motor_lf.torque * motor_lf.speed;
       output_power += motor_lr.torque * motor_lr.speed;
@@ -281,11 +281,11 @@ extern "C" void control_task(void const * argument)
       // 预测功率计算：消耗功率 = 输出功率 + omega^2*定值 + 扭矩^2*定值
       float predicted_power = output_power + k_omega_square * total_omega_square + k_torque_square * total_torque_square + kS;
       
-       // 检查超级电容数据是否过期
+      
        
        // 发送功率数据
        plotter.plot(
-         super_cap.voltage,  // 实际功率消耗
+         super_cap.voltage,  // 电压
          predicted_power,
          
          

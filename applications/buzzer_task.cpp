@@ -29,7 +29,7 @@ extern "C" void buzzer_task()
   
   // 播放旋律
   for (int i = 0; i < 5; i++) {
-    buzzer.set(melody[i], 0.007);  // 30%占空比
+    buzzer.set(melody[i], 0.007);  
     buzzer.start();
     osDelay(durations[i]);
     buzzer.stop();
